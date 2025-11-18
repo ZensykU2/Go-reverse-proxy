@@ -162,7 +162,7 @@ export default function App() {
           </p>
 
           <button className="btn btn-accent" onClick={sendTestRequest}>
-            Test Proxy Connection
+            Test
           </button>
 
           {testResult && (
