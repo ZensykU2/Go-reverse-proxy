@@ -1,24 +1,3 @@
-:root {
-  --bg: #0b0b0b;
-  --card-bg: #1a1a1a;
-  --accent: #00adef;
-  --success: #00cc66;
-  --danger: #ff5050;
-  --glow-color: var(--accent);
-  --text: #f0f0f0;
-  --subtext: #aaa;
-  font-synthesis: none;
-  -webkit-font-smoothing: antialiased;
-}
-
-body {
-  margin: 0;
-  padding: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: "Inter", system-ui, sans-serif;
-}
-
 .dashboard {
   position: relative;
   max-width: 1000px;
