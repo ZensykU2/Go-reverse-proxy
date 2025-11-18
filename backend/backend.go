@@ -16,8 +16,7 @@ func main() {
 		fmt.Fprintf(w, "Backend (%s): %s\n", port, r.URL.Path)
 	})
 
-	fmt.Printf("Backend läuft auf :%s\n", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		fmt.Printf("Fehler auf Port %s: %v\n", port, err)
+		fmt.Printf("Issue on Port %s: %v\n", port, err)
 	}
 }

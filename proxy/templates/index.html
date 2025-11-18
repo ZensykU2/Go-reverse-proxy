@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>Reverse Proxy Monitor</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #181818;
+      color: #f0f0f0;
+      margin: 2rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+    th, td {
+      padding: 0.5rem;
+      border-bottom: 1px solid #333;
+      text-align: left;
+    }
+    .healthy { color: #00ff80; }
+    .down { color: #ff4040; }
+  </style>
+</head>
+<body>
+  <h1>Reverse Proxy Monitor</h1>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Adress</th>
+        <th>Status</th>
+        <th>Last contact</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ range . }}
+        <tr>
+          <td>{{ .Name }}</td>
+          <td>{{ .URL.Host }}</td>
+          {{ if .Healthy }}
+            <td class="healthy">Online</td>
+          {{ else }}
+            <td class="down"> Offline</td>
+          {{ end }}
+          <td>{{ .LastSeen.Format "02.01.2006 15:04:05" }}</td>
+        </tr>
+      {{ end }}
+    </tbody>
+  </table>
+  <script>
+    setTimeout(() => window.location.reload(), 3000);
+  </script>
+</body>
+</html>

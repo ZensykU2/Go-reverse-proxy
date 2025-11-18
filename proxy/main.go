@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
 	"net"
@@ -74,8 +75,9 @@ func main() {
 		os.Exit(0)
 	}()
 
+	http.HandleFunc("/", serveDashboard)
 	// start proxy
-	http.HandleFunc("/", handleRequest)
+	http.HandleFunc("/proxy/", handleRequest)
 	log.Println("reverse proxy running on port :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatal(err)
@@ -85,6 +87,18 @@ func main() {
 // ------------------------------------------------------------
 // request handling
 // ------------------------------------------------------------
+
+func serveDashboard(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := template.ParseFiles("templates/index.html")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	mu.RLock()
+	defer mu.RUnlock()
+	tmpl.Execute(w, backends)
+}
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	b := getNextHealthyBackend()
