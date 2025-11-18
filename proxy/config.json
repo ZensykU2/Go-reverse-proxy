@@ -1,0 +1,10 @@
+[
+  {
+    "name": "alpha",
+    "port": 8081
+  },
+  {
+    "name": "bravo",
+    "port": 8082
+  }
+]
