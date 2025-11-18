@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"net"
@@ -35,14 +34,22 @@ type Backend struct {
 	Cmd      *exec.Cmd
 }
 
+type BackendStatus struct {
+	Name     string    `json:"name"`
+	Host     string    `json:"host"`
+	Healthy  bool      `json:"healthy"`
+	LastSeen time.Time `json:"lastSeen"`
+}
+
 // ------------------------------------------------------------
 // globals
 // ------------------------------------------------------------
 
 var (
-	backends []*Backend
-	counter  uint64
-	mu       sync.RWMutex
+	backends    []*Backend
+	counter     uint64
+	mu          sync.RWMutex
+	proxyActive atomic.Bool
 )
 
 // ------------------------------------------------------------
@@ -75,9 +82,18 @@ func main() {
 		os.Exit(0)
 	}()
 
-	http.HandleFunc("/", serveDashboard)
+	proxyActive.Store(true) // default enabled
+
+	// send api status to frontend
+	http.HandleFunc("/api/status", handleAPIStatus)
+	// manually stop backend serve
+	http.HandleFunc("/api/stop", handleStopBackend)
+	http.HandleFunc("/api/start", handleStartOrRestartBackend)
 	// start proxy
 	http.HandleFunc("/proxy/", handleRequest)
+	http.HandleFunc("/api/proxy/pause", handleProxyPause)
+	http.HandleFunc("/api/proxy/resume", handleProxyResume)
+	http.HandleFunc("/api/proxy/state", handleProxyState)
 	log.Println("reverse proxy running on port :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatal(err)
@@ -88,19 +104,30 @@ func main() {
 // request handling
 // ------------------------------------------------------------
 
-func serveDashboard(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.ParseFiles("templates/index.html")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
+func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	mu.RLock()
 	defer mu.RUnlock()
-	tmpl.Execute(w, backends)
+
+	statusList := make([]BackendStatus, 0, len(backends))
+	for _, b := range backends {
+		statusList = append(statusList, BackendStatus{
+			Name:     b.Name,
+			Host:     b.URL.Host,
+			Healthy:  b.Healthy,
+			LastSeen: b.LastSeen,
+		})
+	}
+
+	json.NewEncoder(w).Encode(statusList)
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
+	if !proxyActive.Load() {
+		http.Error(w, "Proxy is currently paused", http.StatusServiceUnavailable)
+		return
+	}
+
 	b := getNextHealthyBackend()
 	if b == nil {
 		http.Error(w, "No healthy backend available", http.StatusServiceUnavailable)
@@ -127,6 +154,100 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 
 	log.Printf("Request to backend '%s' (%s) forwarded", b.Name, b.URL.Host)
+}
+
+func handleProxyPause(w http.ResponseWriter, r *http.Request) {
+	proxyActive.Store(false)
+	log.Println("Reverse Proxy disabled")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "paused",
+		"message": "Proxy disabled",
+	})
+}
+
+func handleProxyResume(w http.ResponseWriter, r *http.Request) {
+	proxyActive.Store(true)
+	log.Println("Reverse Proxy enabled")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "active",
+		"message": "Proxy enabled",
+	})
+}
+
+func handleProxyState(w http.ResponseWriter, r *http.Request) {
+	state := "paused"
+	if proxyActive.Load() {
+		state = "active"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"state": state,
+	})
+}
+
+func handleStartOrRestartBackend(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "Parameter 'name' missing", http.StatusBadRequest)
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, b := range backends {
+		if b.Name == name {
+			// If process running, restart
+			if b.Cmd != nil && b.Cmd.Process != nil {
+				log.Printf("Backend '%s' restarting ...", b.Name)
+				b.Cmd.Process.Kill()
+			} else {
+				log.Printf("Backend '%s' starting ...", b.Name)
+			}
+
+			startBackend(b)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": fmt.Sprintf("Backend '%s' gestartet/neu gestartet", b.Name),
+			})
+			return
+		}
+	}
+
+	http.Error(w, fmt.Sprintf("Backend '%s' nicht gefunden", name), http.StatusNotFound)
+}
+
+func handleStopBackend(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "Parameter 'name' fehlt", http.StatusBadRequest)
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, b := range backends {
+		if b.Name == name {
+			if b.Cmd != nil && b.Cmd.Process != nil {
+				err := b.Cmd.Process.Kill()
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Fehler beim Stoppen von %s: %v", name, err), http.StatusInternalServerError)
+					return
+				}
+				b.Healthy = false
+				log.Printf("✋ Backend '%s' wurde manuell gestoppt", b.Name)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{
+					"message": fmt.Sprintf("Backend '%s' gestoppt", b.Name),
+				})
+				return
+			}
+		}
+	}
+
+	http.Error(w, fmt.Sprintf("Backend '%s' nicht gefunden oder bereits gestoppt", name), http.StatusNotFound)
 }
 
 // ------------------------------------------------------------
