@@ -17,7 +17,7 @@ This tool gives you a full visual control over your proxy, including backend hea
 - **Config file (`config.json`)** for backend definitions
 - Standalone executable or **Docker-Ready**
 
-### Frontend (Reacht + Vite)
+### Frontend (React + Vite)
 - Sleek **dark UI** design
 - **Real-time monitoring** with status indicators
 - **Backend control** (Start/Stop) directly from the UI
