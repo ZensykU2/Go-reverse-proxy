@@ -161,8 +161,12 @@ export default function App() {
             Reverse‑Proxy is active.
           </p>
 
-          <button className="btn btn-accent" onClick={sendTestRequest}>
-            Test
+          <button
+              className={`btn btn-accent ${proxyState === "offline" ? "btn-disabled" : ""}`}
+              onClick={sendTestRequest}
+              disabled={proxyState === "offline"}
+            >
+              Test
           </button>
 
           {testResult && (
