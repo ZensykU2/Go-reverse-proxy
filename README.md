@@ -14,7 +14,7 @@ This tool gives you a full visual control over your proxy, including backend hea
 - **Automatic backend management** via Go (`exec.Command`)
 - **Round-Robin Load Balancing** between configured backends
 - **Health checks** every 3 seconds (status updates in real time)
-- **Config file (`config.json`)** fir backend definitions
+- **Config file (`config.json`)** for backend definitions
 - Standalone executable or **Docker-Ready**
 
 ### Frontend (Reacht + Vite)
