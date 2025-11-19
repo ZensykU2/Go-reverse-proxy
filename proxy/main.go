@@ -354,7 +354,7 @@ func cleanup() {
 	for _, b := range backends {
 		if b.Cmd != nil && b.Cmd.Process != nil {
 			b.Cmd.Process.Kill()
-			log.Printf("Backend '%s' stopped", b.Name)
+			log.Printf("Backend '%s' stopped.", b.Name)
 		}
 	}
 	log.Println("All backends shut-down.")
