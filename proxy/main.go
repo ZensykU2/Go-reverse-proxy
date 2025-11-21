@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -27,19 +28,28 @@ type Config struct {
 }
 
 type Backend struct {
-	Name     string
-	URL      *url.URL
-	Healthy  bool
-	LastSeen time.Time
-	Cmd      *exec.Cmd
+	Name           string
+	URL            *url.URL
+	Healthy        bool
+	LastSeen       time.Time
+	Cmd            *exec.Cmd
+	ActiveRequests int64
 }
 
 type BackendStatus struct {
-	Name     string    `json:"name"`
-	Host     string    `json:"host"`
-	Healthy  bool      `json:"healthy"`
-	LastSeen time.Time `json:"lastSeen"`
+	Name           string    `json:"name"`
+	Host           string    `json:"host"`
+	Healthy        bool      `json:"healthy"`
+	LastSeen       time.Time `json:"lastSeen"`
+	ActiveRequests int64     `json:"activeRequests"`
 }
+
+type LoadBalancingStrategy string
+
+const (
+	StrategyRoundRobin       LoadBalancingStrategy = "round_robin"
+	StrategyLeastConnections LoadBalancingStrategy = "least_connections"
+)
 
 // ------------------------------------------------------------
 // globals
@@ -50,6 +60,7 @@ var (
 	counter     uint64
 	mu          sync.RWMutex
 	proxyActive atomic.Bool
+	strategy    LoadBalancingStrategy = StrategyRoundRobin
 )
 
 // ------------------------------------------------------------
@@ -62,6 +73,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Issue reading config.json: %v", err)
 	}
+
+	// load strategy
+	loadStrategy()
 
 	// start backends
 	for _, cfg := range cfgs {
@@ -94,6 +108,8 @@ func main() {
 	http.HandleFunc("/api/proxy/pause", handleProxyPause)
 	http.HandleFunc("/api/proxy/resume", handleProxyResume)
 	http.HandleFunc("/api/proxy/state", handleProxyState)
+	http.HandleFunc("/api/proxy/strategy", handleProxyStrategy)
+
 	log.Println("reverse proxy running on port :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatal(err)
@@ -112,10 +128,11 @@ func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	statusList := make([]BackendStatus, 0, len(backends))
 	for _, b := range backends {
 		statusList = append(statusList, BackendStatus{
-			Name:     b.Name,
-			Host:     b.URL.Host,
-			Healthy:  b.Healthy,
-			LastSeen: b.LastSeen,
+			Name:           b.Name,
+			Host:           b.URL.Host,
+			Healthy:        b.Healthy,
+			LastSeen:       b.LastSeen,
+			ActiveRequests: atomic.LoadInt64(&b.ActiveRequests),
 		})
 	}
 
@@ -123,6 +140,7 @@ func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
+	reqID := time.Now().UnixNano()
 	if !proxyActive.Load() {
 		http.Error(w, "Proxy is currently paused", http.StatusServiceUnavailable)
 		return
@@ -134,9 +152,19 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ActiveRequests is already incremented in getNextHealthyBackend
+	currentActive := atomic.LoadInt64(&b.ActiveRequests)
+	log.Printf("[%d] Starting request to '%s'. Active: %d", reqID, b.Name, currentActive)
+
+	defer func() {
+		newActive := atomic.AddInt64(&b.ActiveRequests, -1)
+		log.Printf("[%d] Finished request to '%s'. Active: %d", reqID, b.Name, newActive)
+	}()
+
 	r.URL.Scheme = b.URL.Scheme
 	r.URL.Host = b.URL.Host
 	r.Host = b.URL.Host
+	r.URL.Path = strings.TrimPrefix(r.URL.Path, "/proxy")
 
 	resp, err := http.DefaultTransport.RoundTrip(r)
 	if err != nil {
@@ -152,8 +180,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
-
-	log.Printf("Request to backend '%s' (%s) forwarded", b.Name, b.URL.Host)
 }
 
 func handleProxyPause(w http.ResponseWriter, r *http.Request) {
@@ -183,6 +209,43 @@ func handleProxyState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"state": state,
+	})
+}
+
+func handleProxyStrategy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == http.MethodPost {
+		var req struct {
+			Strategy string `json:"strategy"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		switch LoadBalancingStrategy(req.Strategy) {
+		case StrategyRoundRobin:
+			strategy = StrategyRoundRobin
+		case StrategyLeastConnections:
+			strategy = StrategyLeastConnections
+		default:
+			mu.Unlock()
+			http.Error(w, "Invalid strategy", http.StatusBadRequest)
+			return
+		}
+		saveStrategy(strategy)
+		log.Printf("Load balancing strategy changed to: %s", strategy)
+		mu.Unlock()
+	}
+
+	mu.RLock()
+	currentStrategy := strategy
+	mu.RUnlock()
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"strategy": string(currentStrategy),
 	})
 }
 
@@ -237,7 +300,7 @@ func handleStopBackend(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				b.Healthy = false
-				log.Printf("✋ Backend '%s' wurde manuell gestoppt", b.Name)
+				log.Printf(" Backend '%s' manually stopped", b.Name)
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(map[string]string{
 					"message": fmt.Sprintf("Backend '%s' gestoppt", b.Name),
@@ -304,8 +367,8 @@ func startBackend(b *Backend) {
 }
 
 func getNextHealthyBackend() *Backend {
-	mu.RLock()
-	defer mu.RUnlock()
+	mu.Lock()
+	defer mu.Unlock()
 
 	var healthy []*Backend
 	for _, b := range backends {
@@ -316,8 +379,69 @@ func getNextHealthyBackend() *Backend {
 	if len(healthy) == 0 {
 		return nil
 	}
+
+	if strategy == StrategyLeastConnections {
+		var best *Backend
+		minActive := int64(-1)
+
+		for _, b := range healthy {
+			active := atomic.LoadInt64(&b.ActiveRequests)
+			if minActive == -1 || active < minActive {
+				minActive = active
+				best = b
+			}
+		}
+		if best != nil {
+			val := atomic.AddInt64(&best.ActiveRequests, 1)
+			log.Printf("Selected '%s' (LeastConn). New Active: %d", best.Name, val)
+		}
+		return best
+	}
+
+	// Default: Round Robin
 	index := int(atomic.AddUint64(&counter, 1)) % len(healthy)
-	return healthy[index]
+	b := healthy[index]
+	val := atomic.AddInt64(&b.ActiveRequests, 1)
+	log.Printf("Selected '%s' (RR). New Active: %d", b.Name, val)
+	return b
+}
+
+func saveStrategy(s LoadBalancingStrategy) {
+	file, err := os.Create("strategy.json")
+	if err != nil {
+		log.Printf("Failed to save strategy: %v", err)
+		return
+	}
+	defer file.Close()
+
+	json.NewEncoder(file).Encode(map[string]string{"strategy": string(s)})
+}
+
+func loadStrategy() {
+	file, err := os.Open("strategy.json")
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("Failed to load strategy: %v", err)
+		}
+		return
+	}
+	defer file.Close()
+
+	var data struct {
+		Strategy string `json:"strategy"`
+	}
+	if err := json.NewDecoder(file).Decode(&data); err != nil {
+		log.Printf("Failed to decode strategy: %v", err)
+		return
+	}
+
+	switch LoadBalancingStrategy(data.Strategy) {
+	case StrategyRoundRobin:
+		strategy = StrategyRoundRobin
+	case StrategyLeastConnections:
+		strategy = StrategyLeastConnections
+	}
+	log.Printf("Loaded strategy from file: %s", strategy)
 }
 
 // ------------------------------------------------------------
