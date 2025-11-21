@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import "./App.css";
 
 interface Backend {
@@ -6,12 +6,16 @@ interface Backend {
   host: string;
   healthy: boolean;
   lastSeen: string;
+  activeRequests?: number;
 }
 
 export default function App() {
-  
+
   const [backends, setBackends] = useState<Backend[]>([]);
   const [proxyState, setProxyState] = useState("active");
+  const [strategy, setStrategy] = useState("round_robin");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const fetchStatus = async () => {
     const res = await fetch("/api/status");
@@ -20,24 +24,59 @@ export default function App() {
   };
 
   const fetchProxyState = async () => {
-  try {
-    const res = await fetch("/api/proxy/state", { cache: "no-store" });
-    if (!res.ok) throw new Error("Server returned error");
-    const data = await res.json();
-    setProxyState(data.state);
+    try {
+      const res = await fetch("/api/proxy/state", { cache: "no-store" });
+      if (!res.ok) throw new Error("Server returned error");
+      const data = await res.json();
+      setProxyState(data.state);
     } catch {
       setProxyState("offline");
+    }
+  };
+
+  const fetchStrategy = async () => {
+    try {
+      const res = await fetch("/api/proxy/strategy");
+      const data = await res.json();
+      setStrategy(data.strategy);
+    } catch (err) {
+      console.error("Failed to fetch strategy", err);
+    }
+  };
+
+  const changeStrategy = async (newStrategy: string) => {
+    try {
+      await fetch("/api/proxy/strategy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: newStrategy }),
+      });
+      setStrategy(newStrategy);
+    } catch (err) {
+      console.error("Failed to set strategy", err);
     }
   };
 
   useEffect(() => {
     fetchStatus();
     fetchProxyState();
-    const id1 = setInterval(fetchStatus, 3000);
-    const id2 = setInterval(fetchProxyState, 3000);
+    fetchStrategy();
+    const id1 = setInterval(fetchStatus, 1000);
+    const id2 = setInterval(fetchProxyState, 1000);
+    const id3 = setInterval(fetchStrategy, 1000);
+
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+
     return () => {
       clearInterval(id1);
       clearInterval(id2);
+      clearInterval(id3);
+      document.removeEventListener("mousedown", handleClickOutside);
     };
   }, []);
 
@@ -82,7 +121,7 @@ export default function App() {
   };
 
   return (
-    
+
     <div className="dashboard">
       <header>
         <h1>Reverse Proxy Dashboard</h1>
@@ -110,14 +149,50 @@ export default function App() {
           )}
         </div>
       </header>
-
       <main>
+        <section className="strategy-selector">
+          <div className="strategy-wrapper" ref={dropdownRef}>
+            <div className="custom-select-container">
+              <div
+                className={`custom-select-trigger ${isDropdownOpen ? "open" : ""}`}
+                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+              >
+                {strategy === "round_robin" ? "Round Robin" : "Least Connections"}
+                <span className="arrow"></span>
+              </div>
+              {isDropdownOpen && (
+                <div className="custom-options">
+                  <div
+                    className={`custom-option ${strategy === "round_robin" ? "selected" : ""}`}
+                    onClick={() => {
+                      changeStrategy("round_robin");
+                      setIsDropdownOpen(false);
+                    }}
+                  >
+                    Round Robin
+                  </div>
+                  <div
+                    className={`custom-option ${strategy === "least_connections" ? "selected" : ""}`}
+                    onClick={() => {
+                      changeStrategy("least_connections");
+                      setIsDropdownOpen(false);
+                    }}
+                  >
+                    Least Connections
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
         <table className="backend-table">
           <thead>
             <tr>
               <th>Name</th>
               <th>Host</th>
               <th>Status</th>
+              <th>Active Requests</th>
               <th>Last Seen</th>
               <th>Actions</th>
             </tr>
@@ -134,6 +209,7 @@ export default function App() {
                     {b.healthy ? "Online" : "Offline"}
                   </span>
                 </td>
+                <td>{b.activeRequests !== undefined ? b.activeRequests : "—"}</td>
                 <td>
                   {b.lastSeen
                     ? new Date(b.lastSeen).toLocaleString()
@@ -154,51 +230,75 @@ export default function App() {
           </tbody>
         </table>
 
-        <section className="proxy-tester">
-          <h2>Proxy Tester</h2>
-          <p className="tester-description">
-            Sends test request to <code>/proxy/test</code> checking if
-            Reverse‑Proxy is active.
-          </p>
-
-          <button
+        <section className="tests-section">
+          <div className="test-card">
+            <h3>Proxy Connectivity</h3>
+            <p className="test-desc">
+              Send a test request to <code>/proxy/test</code> to verify the proxy is reachable and forwarding correctly.
+            </p>
+            <button
               className={`btn btn-accent ${proxyState === "offline" ? "btn-disabled" : ""}`}
               onClick={sendTestRequest}
               disabled={proxyState === "offline"}
             >
-              Test
-          </button>
+              Test Connectivity
+            </button>
 
-          {testResult && (
-            <div
-              className={`tester-result ${
-                testResult.status >= 500
+            {testResult && (
+              <div
+                className={`tester-result ${testResult.status >= 500
                   ? "error"
                   : testResult.status >= 400
-                  ? "warning"
-                  : "success"
-              }`}
-            >
-              <p>
-                <strong>
-                  Status {testResult.status > 0 ? testResult.status : "?"}
-                </strong>{" "}
-                {testResult.time && (
-                  <span className="response-time">{testResult.time} ms</span>
-                )}
-              </p>
-              <pre>
-                {(() => {
-                  try {
-                    const obj = JSON.parse(testResult.body);
-                    return JSON.stringify(obj, null, 2);
-                  } catch {
-                    return testResult.body;
+                    ? "warning"
+                    : "success"
+                  }`}
+              >
+                <p>
+                  <strong>
+                    Status {testResult.status > 0 ? testResult.status : "?"}
+                  </strong>{" "}
+                  {testResult.time && (
+                    <span className="response-time">{testResult.time} ms</span>
+                  )}
+                </p>
+                <pre>
+                  {(() => {
+                    try {
+                      const obj = JSON.parse(testResult.body);
+                      return JSON.stringify(obj, null, 2);
+                    } catch {
+                      return testResult.body;
+                    }
+                  })()}
+                </pre>
+              </div>
+            )}
+          </div>
+
+          <div className="test-card">
+            <h3>Load Testing</h3>
+            <p className="test-desc">
+              Simulate traffic to visualize how the proxy distributes requests across backends.
+            </p>
+            <div className="load-buttons">
+              <button
+                className="btn btn-accent"
+                onClick={() => fetch("/proxy/slow?duration=10s")}
+              >
+                Single Slow Request (10s)
+              </button>
+              <button
+                className="btn btn-accent"
+                onClick={() => {
+                  for (let i = 0; i < 5; i++) {
+                    fetch(`/proxy/slow?duration=10s&r=${Math.random()}`).catch(console.error);
                   }
-                })()}
-              </pre>
+                }}
+              >
+                Spam Slow Requests (5x)
+              </button>
             </div>
-          )}
+          </div>
         </section>
       </main>
       <footer className="footer">
