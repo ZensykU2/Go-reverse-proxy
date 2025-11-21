@@ -296,21 +296,21 @@ func handleStopBackend(w http.ResponseWriter, r *http.Request) {
 			if b.Cmd != nil && b.Cmd.Process != nil {
 				err := b.Cmd.Process.Kill()
 				if err != nil {
-					http.Error(w, fmt.Sprintf("Fehler beim Stoppen von %s: %v", name, err), http.StatusInternalServerError)
+					http.Error(w, fmt.Sprintf("Issue stopping %s: %v", name, err), http.StatusInternalServerError)
 					return
 				}
 				b.Healthy = false
-				log.Printf(" Backend '%s' manually stopped", b.Name)
+				log.Printf("Backend '%s' was manually stopped", b.Name)
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(map[string]string{
-					"message": fmt.Sprintf("Backend '%s' gestoppt", b.Name),
+					"message": fmt.Sprintf("Backend '%s' stopped", b.Name),
 				})
 				return
 			}
 		}
 	}
 
-	http.Error(w, fmt.Sprintf("Backend '%s' nicht gefunden oder bereits gestoppt", name), http.StatusNotFound)
+	http.Error(w, fmt.Sprintf("Backend '%s' not found, already stopped.", name), http.StatusNotFound)
 }
 
 // ------------------------------------------------------------
@@ -478,7 +478,7 @@ func cleanup() {
 	for _, b := range backends {
 		if b.Cmd != nil && b.Cmd.Process != nil {
 			b.Cmd.Process.Kill()
-			log.Printf("Backend '%s' stopped", b.Name)
+			log.Printf("Backend '%s' stopped.", b.Name)
 		}
 	}
 	log.Println("All backends shut-down.")
